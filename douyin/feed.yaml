@@ -1,0 +1,56 @@
+site: douyin
+name: feed
+description: 读取抖音精选页当前已加载的作品；返回可用于 detail/download 的 aweme_id
+domain: www.douyin.com
+strategy: cookie
+browser: true
+
+args:
+  limit:
+    type: int
+    default: 20
+    description: 最多读取当前已加载的作品数（1-50，不自动滚动或翻页）
+
+columns: [rank, aweme_id, title, author, likes, comments, collects, shares, url]
+
+pipeline:
+  - navigate:
+      url: https://www.douyin.com/jingxuan
+      settleMs: 3000
+      retry: false
+  - evaluate: |
+      (async () => {
+        const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 50);
+        const ids = [...document.querySelectorAll('[data-aweme-id]')]
+          .map(node => String(node.getAttribute('data-aweme-id') || '').trim())
+          .filter(id => /^\d+$/.test(id));
+        const uniqueIds = [...new Set(ids)].slice(0, limit);
+        if (!uniqueIds.length) throw new Error('精选页尚未提供作品卡片；请确认网页已登录并重试');
+        const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+        const read = async awemeId => {
+          const response = await fetch('/aweme/v1/web/aweme/detail/?aweme_id=' + encodeURIComponent(awemeId), { credentials: 'include' });
+          const payload = await response.json();
+          const aweme = payload?.aweme_detail || {};
+          if (!aweme.aweme_id) return null;
+          const stat = aweme.statistics || {};
+          return {
+            aweme_id: String(aweme.aweme_id),
+            title: clean(aweme.desc) || String(aweme.aweme_id),
+            author: clean(aweme.author?.nickname),
+            author_id: String(aweme.author?.uid || ''),
+            likes: Number(stat.digg_count || 0),
+            comments: Number(stat.comment_count || 0),
+            collects: Number(stat.collect_count || 0),
+            shares: Number(stat.share_count || 0),
+            url: 'https://www.douyin.com/video/' + encodeURIComponent(String(aweme.aweme_id)),
+          };
+        };
+        const rows = [];
+        // 顺序读取，避免并发放大站点请求；只读取页面已经展示的 ID。
+        for (const id of uniqueIds) {
+          const row = await read(id);
+          if (row) rows.push(row);
+        }
+        return rows.map((row, index) => ({ rank: index + 1, ...row }));
+      })()
+  - limit: ${{ args.limit | default(20) }}

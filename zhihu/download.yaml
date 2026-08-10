@@ -1,6 +1,6 @@
 site: zhihu
 name: download
-description: 导出知乎文章为 Markdown 格式
+description: 导出知乎正文、页面已加载评论与图片为一个本地 Markdown 包
 domain: www.zhihu.com
 strategy: cookie
 browser: true
@@ -88,9 +88,25 @@ pipeline:
         while ((m = imgRe.exec(markdown)) !== null) {
           if (!imageUrls.includes(m[2])) imageUrls.push(m[2]);
         }
+        // Comments are passive: retain only those already rendered by the page.
+        // No comment API, scrolling, or "load more" click is performed here.
+        const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+        const comments = [...new Set([
+          ...document.querySelectorAll('.CommentItem, .CommentItemV2, [class*="CommentItem"]'),
+        ])].slice(0, 20).map((node, index) => {
+          const author = clean(node.querySelector('.UserLink-link, .AuthorInfo-name, [class*="Author"] a')?.textContent || '');
+          const comment = clean(node.querySelector('.CommentItem-content, [class*="CommentItem-content"], .RichText, [class*="Content"]')?.textContent || '');
+          const likes = clean(node.querySelector('button, [class*="Like"]')?.textContent || '');
+          return { index: index + 1, author, content: comment, likes };
+        }).filter(comment => comment.content);
+        const commentsMarkdown = comments.length
+          ? '\n\n## 评论\n\n' + comments.map(comment =>
+              `### ${comment.index}. ${comment.author || '匿名用户'}\n\n${comment.content}${comment.likes ? `\n\n- ${comment.likes}` : ''}`
+            ).join('\n\n') + '\n'
+          : '';
         const safeTitle = title.replace(/[\/\\:*?"<>|]/g, '_').slice(0, 80);
         const output = args.output || './zhihu-articles';
-        const content = '---\ntitle: "' + title.replace(/"/g, '\\"') + '"\nauthor: "' + author.replace(/"/g, '\\"') + '"\n' + (publishTime ? 'date: "' + publishTime + '"\n' : '') + 'source: "' + args.url + '"\n---\n\n' + markdown;
+        const content = '---\ntitle: "' + title.replace(/"/g, '\\"') + '"\nauthor: "' + author.replace(/"/g, '\\"') + '"\n' + (publishTime ? 'date: "' + publishTime + '"\n' : '') + 'source: "' + args.url + '"\n---\n\n' + markdown + commentsMarkdown;
 
         return {
           title: title,

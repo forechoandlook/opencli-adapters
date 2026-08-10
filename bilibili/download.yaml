@@ -25,6 +25,10 @@ args:
     type: int
     default: 0
     description: "可选时长上限；0 不限制，超出会在下载前停止"
+  comment_limit:
+    type: int
+    default: 20
+    description: "写入同一份 Markdown 的首屏顶层评论数，0 表示不读取；最大 50"
 
 columns: [title, status, size, path]
 
@@ -44,6 +48,8 @@ pipeline:
           const dash = playinfo.dash || playinfo.data?.dash;
           const title = String(state.videoData?.title || document.querySelector('h1.video-title, .video-title')?.textContent || 'video').replace(/\s+/g, ' ').trim();
           const duration = Number(state.videoData?.duration || 0);
+          const owner = state.videoData?.owner || {};
+          const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
           const maxDuration = Number(args.max_duration_seconds || 0);
           if (maxDuration > 0 && duration > maxDuration) {
             throw new Error(`视频时长 ${duration}s 超出 --max_duration_seconds=${maxDuration}；未下载`);
@@ -61,9 +67,34 @@ pipeline:
           const audioUrl = urlOf(audio);
           if (!video) throw new Error(`页面没有不高于 ${maxHeight}p 的可下载视频流；未下载`);
           if (!videoUrl || !audioUrl) throw new Error('页面未提供可直接复用的音视频地址；未下载');
+          const commentLimit = Math.min(Math.max(Number(args.comment_limit) || 0, 0), 50);
+          let comments = [];
+          if (commentLimit > 0) {
+            const aid = state.aid || state.videoData?.aid;
+            if (aid) {
+              const query = new URLSearchParams({ type: '1', oid: String(aid), mode: '3', next: '0', ps: String(commentLimit) });
+              const response = await fetch('https://api.bilibili.com/x/v2/reply/main?' + query, { credentials: 'include' });
+              const payload = await response.json();
+              if (payload?.code === 0) {
+                comments = (payload?.data?.replies || []).slice(0, commentLimit).map(reply => ({
+                  author: clean(reply.member?.uname),
+                  content: clean(reply.content?.message),
+                  likes: Number(reply.like || 0),
+                  replies: Number(reply.rcount || 0),
+                  time: reply.ctime ? new Date(Number(reply.ctime) * 1000).toISOString() : '',
+                })).filter(comment => comment.content);
+              }
+            }
+          }
           return {
             bvid,
             title,
+            author: clean(owner.name),
+            author_id: String(owner.mid || ''),
+            content: clean(state.videoData?.desc || ''),
+            noteType: 'video',
+            sourceUrl: location.href,
+            comments,
             duration,
             selected_height: Number(video.height || 0),
             video_url: videoUrl,
@@ -80,3 +111,5 @@ pipeline:
       filename: 'bilibili_${{ data.bvid }}'
       referer: '${{ data.referer }}'
       user_agent: '${{ data.user_agent }}'
+      saveMetadata: true
+      metadataFilename: video.md

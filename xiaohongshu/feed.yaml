@@ -18,9 +18,15 @@ context:
           ? cards
           : Array.from(document.querySelectorAll('a[href*="/explore/"]'));
         return roots.map(root => {
-          const link = root.matches?.('a[href*="/explore/"]')
-            ? root
-            : root.querySelector('a.cover.mask, a[href*="/explore/"]');
+          // Each card has an unsigned cover link and a signed feed link.
+          // Keep the link Xiaohongshu issued for this card so the result can
+          // be opened with its xsec feed context intact.
+          const noteLinks = Array.from(root.querySelectorAll?.('a[href*="/explore/"]') || []);
+          if (root.matches?.('a[href*="/explore/"]')) noteLinks.unshift(root);
+          const link = noteLinks.find(anchor => {
+            try { return new URL(anchor.href, location.href).searchParams.has('xsec_token'); }
+            catch { return false; }
+          }) || noteLinks[0];
           const url = link?.href || link?.getAttribute?.('href') || '';
           if (!url || seen.has(url)) return null;
           seen.add(url);
@@ -28,12 +34,18 @@ context:
           const textLines = String(root.innerText || '').split('\n').map(cleanText).filter(Boolean);
           const title = cleanText(root.querySelector('.title, .note-title, a.title, .footer .title span, [class*="title"]')?.textContent || image?.alt || textLines[0] || '');
           const author = cleanText(root.querySelector('a.author .name, .author-name, .nick-name, .author .name, [class*="author"] [class*="name"]')?.textContent || '');
+          const authorLink = Array.from(root.querySelectorAll?.('a[href*="/user/profile/"]') || []).find(anchor => {
+            try { return /\/user\/profile\/[^/?#]+/.test(new URL(anchor.href, location.href).pathname); }
+            catch { return false; }
+          });
+          const authorId = authorLink?.href?.match(/\/user\/profile\/([^/?#]+)/)?.[1] || '';
           const likes = cleanText(root.querySelector('.like-count, .like-wrapper .count, .count, [class*="like"] [class*="count"]')?.textContent || '0');
           const type = root.querySelector('video, [class*="video"], [class*="Video"]') ? 'video' : 'image';
           return {
             id: url.match(/\/explore\/([^/?#]+)/)?.[1] || '',
             title,
             author,
+            author_id: authorId,
             likes,
             type,
             url,
@@ -48,7 +60,7 @@ args:
     default: 20
     description: Number of items to return
 
-columns: [title, author, likes, type, url]
+columns: [title, author, author_id, likes, type, url]
 
 pipeline:
   - navigate:
@@ -86,6 +98,7 @@ pipeline:
             title: String(note.displayTitle || note.display_title || '').trim(),
             type: String(note.type || '').trim(),
             author: String(user.nickname || '').trim(),
+            author_id: String(user.userId || user.user_id || user.id || '').trim(),
             likes: String(interact.likedCount || interact.liked_count || 0),
             url,
           };

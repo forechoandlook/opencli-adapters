@@ -18,7 +18,7 @@ args:
     positional: true
     type: string
     required: true
-    description: "Note ID or full Xiaohongshu explore URL (preserves xsec_token)"
+    description: "Note ID, /explore URL, or signed /search_result URL (preserves xsec_token)"
   output:
     type: string
     default: "./xiaohongshu-downloads"
@@ -39,11 +39,16 @@ pipeline:
           if (!/(^|\.)xiaohongshu\.com$/i.test(parsed.hostname)) {
             throw new Error('URL host must be xiaohongshu.com');
           }
-          const match = parsed.pathname.match(/^\/explore\/([^/?#]+)$/);
-          if (!match) throw new Error('URL must be a Xiaohongshu /explore/<note-id> link');
+          const match = parsed.pathname.match(/^\/(?:explore|search_result)\/([^/?#]+)$/);
+          if (!match) throw new Error('URL must be a Xiaohongshu /explore/<note-id> or /search_result/<note-id> link');
           noteId = match[1];
           xsecToken = parsed.searchParams.get('xsec_token') || '';
           xsecSource = parsed.searchParams.get('xsec_source') || '';
+          // Keep the page route that issued the signature. Search result links
+          // are not interchangeable with feed /explore links.
+          const route = parsed.pathname.startsWith('/search_result/') ? 'search_result' : 'explore';
+          parsed.pathname = '/' + route + '/' + encodeURIComponent(noteId);
+          return { noteId, detailUrl: parsed.toString() };
         } catch (error) {
           if (/^https?:\/\//i.test(raw)) throw error;
         }

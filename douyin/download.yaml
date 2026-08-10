@@ -1,0 +1,72 @@
+site: douyin
+name: download
+description: 下载已打开或指定抖音作品的页面已授权媒体，并写入作品 Markdown
+domain: www.douyin.com
+strategy: cookie
+browser: true
+
+args:
+  aweme-id:
+    positional: true
+    type: string
+    required: true
+    description: 抖音作品 ID（例如 7642367521328221483）
+  output:
+    type: string
+    default: ./douyin-downloads
+    description: 输出目录
+  quality:
+    type: string
+    default: 576p
+    choices: [720p, 576p]
+    description: 最高下载清晰度；只选择页面已提供且不高于该档位的版本
+
+columns: [index, type, status, size, path]
+
+pipeline:
+  - navigate:
+      url: https://www.douyin.com/video/${{ args['aweme-id'] }}
+      retry: false
+  - evaluate: |
+      (async () => {
+        const awemeId = String(${{ args['aweme-id'] | json }} || '').trim();
+        if (!/^\d+$/.test(awemeId)) throw new Error('aweme-id 必须为纯数字作品 ID');
+        const response = await fetch('/aweme/v1/web/aweme/detail/?aweme_id=' + encodeURIComponent(awemeId), { credentials: 'include' });
+        const payload = await response.json();
+        const aweme = payload?.aweme_detail || {};
+        if (!aweme.aweme_id) throw new Error('详情接口未返回作品数据；请在已登录的抖音网页中重试');
+        const video = aweme.video || {};
+        const maxHeight = ({ '720p': 720, '576p': 576 })[String(args.quality || '576p')] || 576;
+        const variants = Array.isArray(video.bit_rate) ? video.bit_rate : [];
+        const selected = variants
+          .filter(item => Number(item?.play_addr?.height || 0) > 0 && Number(item.play_addr.height) <= maxHeight)
+          .sort((left, right) => Number(right.play_addr.height) - Number(left.play_addr.height) || Number(right.bit_rate || 0) - Number(left.bit_rate || 0))[0];
+        const urls = selected
+          ? (selected.play_addr?.url_list || [])
+          : [video.play_addr_h264, video.play_addr, video.play_addr_265].flatMap(item => item?.url_list || [])
+          .filter(url => /^https?:\/\//i.test(url));
+        const mediaUrl = urls[0] || '';
+        if (!mediaUrl) throw new Error('页面未提供可复用的 HTTP 播放地址；不会下载 blob URL');
+        const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+        const statistics = aweme.statistics || {};
+        const comments = Array.isArray(aweme.comment_list) ? aweme.comment_list.map(comment => ({
+          author: clean(comment?.user?.nickname), content: clean(comment?.text || comment?.content),
+          likes: Number(comment?.digg_count || 0), replies: Number(comment?.reply_comment_total || 0),
+          time: comment?.create_time ? new Date(Number(comment.create_time) * 1000).toISOString() : '',
+        })).filter(comment => comment.content) : [];
+        return {
+          title: clean(aweme.desc) || awemeId,
+          author: clean(aweme.author?.nickname), author_id: String(aweme.author?.uid || ''),
+          content: clean(aweme.desc), noteType: 'video', sourceUrl: location.href,
+          statistics: { plays: Number(statistics.play_count || 0), likes: Number(statistics.digg_count || 0), comments: Number(statistics.comment_count || 0), collects: Number(statistics.collect_count || 0), shares: Number(statistics.share_count || 0) },
+          comments, username: awemeId, selected_height: Number(selected?.play_addr?.height || video.play_addr_h264?.height || 0), items: [{ type: 'video', url: mediaUrl }]
+        };
+      })()
+  - download:
+      type: media-batch
+      output: ${{ args.output }}
+      username: ${{ data.username }}
+      referer: https://www.douyin.com/
+      timeoutSeconds: 3600
+      saveMetadata: true
+      metadataFilename: video.md

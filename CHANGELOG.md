@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 — 2026-08-10
+
+- Added `douyin feed` and `douyin search`, returning stable `aweme_id` values that can be passed to `douyin download`.
+- Added `douyin download` with 576p/720p selection, work statistics, and the page-authorized media URL.
+- `xiaohongshu feed` now preserves signed feed links and includes `author_id`; `xiaohongshu download` accepts signed search-result links.
+- Bilibili and Zhihu downloads now preserve first-page comments in the downloaded Markdown.
+
 ## 0.1.3 — 2026-08-10
 
 - `bilibili favorite` and `bilibili favorites` now treat `--limit` as the total number of videos to return. Requests above Bilibili's 40-item page size automatically continue through later pages until the limit or folder end.
