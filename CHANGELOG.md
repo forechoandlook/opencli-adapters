@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3 — 2026-08-10
+
+- `bilibili favorite` and `bilibili favorites` now treat `--limit` as the total number of videos to return. Requests above Bilibili's 40-item page size automatically continue through later pages until the limit or folder end.
+
 ## 0.1.2 — 2026-08-10
 
 - `bilibili favorites` now exports concrete videos by default. It includes collection/published timestamps, metadata, detail URL, and a per-video download command; `bilibili folders` keeps the lightweight folder-list view.
