@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 — 2026-08-10
+
+- `bilibili favorites` now exports concrete videos by default. It includes collection/published timestamps, metadata, detail URL, and a per-video download command; `bilibili folders` keeps the lightweight folder-list view.
+- The extension offers “保存当前页收藏内容” on `space.bilibili.com/<mid>/favlist`, including dynamic account IDs, and saves only items already rendered in the current page.
+- `xiaohongshu favorites` current-page action now matches `/user/profile/<userId>` correctly and still validates the personal-favorites query parameters before extraction.
+- Added `zhihu favorites` for concrete entries across the current account's collections.
+
 ## 0.1.1 — 2026-08-10
 
 - `xiaohongshu favorites --all true` now reads the personal-favorites page until it is stable instead of stopping at the first screen. Results include a signed detail URL and a per-note download command; `favorite_time` is populated only when the page actually provides it.
