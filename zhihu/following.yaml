@@ -20,6 +20,10 @@ args:
     default: false
     description: "翻页直到没有更多；最多 3000 条"
 
+capabilities:
+  auth: true
+  paginate: true
+
 columns: [url_token, name, headline, followers, answers, articles, url]
 
 pipeline:
@@ -29,6 +33,7 @@ pipeline:
       reuseExistingTab: true
   - evaluate:
       retry: false
+      helpers: [zhihu-fetch]
       js: |
         (async () => {
           const raw = String(args.user || '').trim();
@@ -36,15 +41,7 @@ pipeline:
           const limit = wantAll ? 3000 : Math.max(Number(args.limit) || 40, 1);
           const pageSize = 20;
           const MAX_PAGES = 150;
-
-          const get = async (url) => {
-            const response = await fetch(url, { credentials: 'include', headers: { 'x-requested-with': 'fetch' } });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || payload?.error) {
-              throw new Error('知乎接口失败: ' + (payload?.error?.message || response.status) + ' ' + url);
-            }
-            return payload;
-          };
+          const get = zhihuGet;
 
           let token = raw.replace(/[?#].*$/, '');
           const peopleMatch = token.match(/zhihu\.com\/people\/([^/?#]+)/) || token.match(/zhihu\.com\/org\/([^/?#]+)/);

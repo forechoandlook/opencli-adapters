@@ -30,6 +30,12 @@ args:
     default: false
     description: "若本地已记录该用户最新内容，则仅返回更新部分，并更新游标"
 
+capabilities:
+  auth: true
+  paginate: true
+  incremental: true
+  download: true
+
 columns: [kind, id, rank, title, date, votes, cover, media_urls, url, download_command]
 
 pipeline:
@@ -62,6 +68,7 @@ pipeline:
       only_if_empty: true
   - evaluate:
       retry: false
+      helpers: [zhihu-fetch]
       js: |
         (async () => {
           const raw = String(data.raw || args.user || '').trim();
@@ -72,25 +79,9 @@ pipeline:
           const pageSize = 20;
           const MAX_PAGES = 150;
           const latestMarkers = (data.latest && typeof data.latest === 'object') ? data.latest : {};
-
-          const get = async (url) => {
-            const response = await fetch(url, { credentials: 'include', headers: { 'x-requested-with': 'fetch' } });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || payload?.error) {
-              const msg = String(payload?.error?.message || response.status || '');
-              // Deleted / empty accounts: return empty instead of hard-fail for batch jobs.
-              if (/注销|不存在|找不到|没有权限|未找到|已重置|reseted/i.test(msg) || response.status === 404) {
-                return { data: [], paging: { is_end: true }, _soft_empty: true, _message: msg };
-              }
-              throw new Error('知乎接口失败: ' + msg + ' ' + url);
-            }
-            return payload;
-          };
-          const strip = (html) => String(html || '').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
-          const toIso = (value) => {
-            const n = Number(value || 0);
-            return Number.isFinite(n) && n > 0 ? new Date(n * 1000).toISOString().slice(0, 10) : '';
-          };
+          const get = zhihuGet;
+          const strip = zhihuStrip;
+          const toIso = zhihuIso;
           const mediaUrls = (item) => {
             const urls = [];
             const add = value => {

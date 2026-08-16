@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.7 — 2026-08-16
+
+- Declare `capabilities` on following / user / ask adapters (`auth`, `paginate`, `incremental`, `download`, `rich_text`).
+- Use shared `evaluate.helpers` (`wbi`, `zhihu-fetch`, `pinia-wait`) instead of inlined WBI/MD5 and pinia wait loops.
+- `bilibili following --limit` is total rows (auto-paginates past 50), not page size.
+
 ## 0.1.6 — 2026-08-16
 
 - `bilibili user-videos` auto-paginates when `--limit` exceeds the 50-item page size (e.g. 100 recent videos).

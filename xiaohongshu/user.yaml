@@ -25,6 +25,12 @@ args:
     default: false
     description: "若本地已记录该用户最新笔记，则仅返回更新部分，并更新游标"
 
+capabilities:
+  auth: true
+  paginate: true
+  incremental: true
+  download: true
+
 columns: [id, title, type, likes, date, cover, media_urls, url, download_command]
 
 pipeline:

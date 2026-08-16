@@ -6,6 +6,10 @@ strategy: cookie
 browser: true
 timeoutSeconds: 180
 
+capabilities:
+  auth: true
+  rich_text: true
+
 args:
   text:
     positional: true

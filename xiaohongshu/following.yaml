@@ -16,6 +16,10 @@ args:
     default: false
     description: "返回当前登录账号的全部关注"
 
+capabilities:
+  auth: true
+  paginate: false
+
 columns: [id, name, avatar, url]
 
 pipeline:
@@ -26,21 +30,12 @@ pipeline:
       reuseExistingTab: true
   - evaluate:
       retry: false
+      helpers: [pinia-wait]
       js: |
         (async () => {
           const wantAll = Boolean(args.all);
           const limit = wantAll ? 5000 : Math.max(Number(args.limit) || 50, 1);
-          const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-          let user = null;
-          for (let i = 0; i < 12; i++) {
-            const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
-            user = pinia?._s?.get?.('user');
-            if (user && typeof user.getUserFollow === 'function') break;
-            await sleep(400);
-          }
-          if (!user || typeof user.getUserFollow !== 'function') {
-            throw new Error('未找到小红书用户状态，请确认已登录网页版');
-          }
+          const user = await waitPiniaUser(12);
           await user.getUserFollow();
           const raw = user.follow && user.follow._value !== undefined ? user.follow._value : user.follow;
           const list = Array.isArray(raw) ? raw : [];
