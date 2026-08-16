@@ -22,6 +22,7 @@ pipeline:
   - navigate:
       url: https://www.xiaohongshu.com/explore
       waitUntil: commit
+      settleMs: 2500
       reuseExistingTab: true
   - evaluate:
       retry: false
@@ -29,8 +30,14 @@ pipeline:
         (async () => {
           const wantAll = Boolean(args.all);
           const limit = wantAll ? 5000 : Math.max(Number(args.limit) || 50, 1);
-          const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
-          const user = pinia?._s?.get?.('user');
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+          let user = null;
+          for (let i = 0; i < 12; i++) {
+            const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
+            user = pinia?._s?.get?.('user');
+            if (user && typeof user.getUserFollow === 'function') break;
+            await sleep(400);
+          }
           if (!user || typeof user.getUserFollow !== 'function') {
             throw new Error('未找到小红书用户状态，请确认已登录网页版');
           }

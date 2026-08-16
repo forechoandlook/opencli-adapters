@@ -77,7 +77,12 @@ pipeline:
             const response = await fetch(url, { credentials: 'include', headers: { 'x-requested-with': 'fetch' } });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok || payload?.error) {
-              throw new Error('知乎接口失败: ' + (payload?.error?.message || response.status) + ' ' + url);
+              const msg = String(payload?.error?.message || response.status || '');
+              // Deleted / empty accounts: return empty instead of hard-fail for batch jobs.
+              if (/注销|不存在|找不到|没有权限|未找到|已重置|reseted/i.test(msg) || response.status === 404) {
+                return { data: [], paging: { is_end: true }, _soft_empty: true, _message: msg };
+              }
+              throw new Error('知乎接口失败: ' + msg + ' ' + url);
             }
             return payload;
           };
@@ -208,16 +213,7 @@ pipeline:
             }
           }
 
-          if (!rows.length) {
-            if (wantIncremental) {
-              return {
-                token,
-                latest_seen: latestSeen,
-                rows: []
-              };
-            }
-            throw new Error('该用户没有可读取的公开内容，请确认已登录且 url_token 正确: ' + token);
-          }
+          // Empty/deleted profiles return [] so batch archives can continue.
           return {
             token,
             latest_seen: latestSeen,
