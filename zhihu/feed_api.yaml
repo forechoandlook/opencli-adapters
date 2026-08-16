@@ -1,107 +1,96 @@
 site: zhihu
 name: feed_api
-description: 关注的人动态 (Moments API)
+description: 关注的人动态（Moments）；--all true 自动翻页
 domain: www.zhihu.com
+strategy: cookie
+browser: true
+timeoutSeconds: 120
 
 args:
   limit:
     type: int
     default: 20
-    description: Number of activities to return
+    description: Number of activities to return; --all true 时忽略
+  all:
+    type: bool
+    default: false
+    description: 翻页直到没有更多；最多 200 条
+
+columns: [user, action, title, time, upvotes, url]
 
 pipeline:
-  - navigate: https://www.zhihu.com
+  - navigate:
+      url: https://www.zhihu.com
+      waitUntil: commit
+      reuseExistingTab: true
+  - evaluate:
+      retry: false
+      js: |
+        (async () => {
+          const wantAll = Boolean(args.all);
+          const limit = wantAll ? 200 : Math.max(Number(args.limit) || 20, 1);
+          const validActions = ['赞同了回答', '赞同了文章', '回答了问题', '发布了文章', '收藏了文章', '关注了问题', '发布了想法'];
+          const rows = [];
+          let url = 'https://www.zhihu.com/api/v3/moments?limit=20&desktop=true';
+          let pages = 0;
+          const MAX_PAGES = 15;
 
-  - evaluate: |
-      (async () => {
-        const res = await fetch('https://www.zhihu.com/api/v3/moments?limit=50&desktop=true', {
-          credentials: 'include'
-        });
-        const data = await res.json();
-        const items = data.data || [];
-
-        // 有效的动作类型
-        const validActions = ['赞同了回答', '赞同了文章', '回答了问题', '发布了文章', '收藏了文章'];
-
-        return items
-          .map((item) => {
-            const actionText = item.action_text || '';
-            const target = item.target || {};
-            const question = target.question || {};
-            const ts = item.created_time || 0;
-
-            // 检查是否有有效的动作
-            const action = validActions.find(a => actionText.includes(a));
-            if (!action) {
-              return null;
+          const get = async (next) => {
+            const response = await fetch(next, { credentials: 'include', headers: { 'x-requested-with': 'fetch' } });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.error) {
+              throw new Error('知乎动态接口失败: ' + (payload?.error?.message || response.status));
             }
+            return payload;
+          };
 
-            // 提取用户名
-            const user = actionText.split(action)[0].split(',')[0].split('，')[0].trim() || '用户';
-
-            // 提取标题、URL 和点赞数
-            let title = '';
-            let url = '';
-            let upvotes = '0';
-
-            if (target.type === 'answer') {
-              title = question.title || '';
-              if (question.id && target.id) {
-                url = 'https://www.zhihu.com/question/' + question.id + '/answer/' + target.id;
+          while (pages < MAX_PAGES && rows.length < limit && url) {
+            const payload = await get(url);
+            const items = Array.isArray(payload?.data) ? payload.data : [];
+            if (!items.length) break;
+            for (const item of items) {
+              if (rows.length >= limit) break;
+              const actionText = String(item.action_text || '');
+              const target = item.target || {};
+              const question = target.question || {};
+              const ts = Number(item.created_time || 0);
+              const action = validActions.find(a => actionText.includes(a));
+              if (!action) continue;
+              const user = actionText.split(action)[0].split(',')[0].split('，')[0].trim() || '用户';
+              let title = '';
+              let itemUrl = '';
+              let upvotes = '0';
+              if (target.type === 'answer') {
+                title = question.title || '';
+                if (question.id && target.id) itemUrl = 'https://www.zhihu.com/question/' + question.id + '/answer/' + target.id;
+                upvotes = String(target.voteup_count || 0);
+              } else if (target.type === 'article') {
+                title = target.title || '';
+                const m = String(target.url || '').match(/\/articles\/(\d+)/);
+                if (m) itemUrl = 'https://zhuanlan.zhihu.com/p/' + m[1];
+                else if (target.id) itemUrl = 'https://zhuanlan.zhihu.com/p/' + target.id;
+                upvotes = String(target.voteup_count || 0);
+              } else if (target.type === 'question') {
+                title = target.title || question.title || '';
+                if (target.id) itemUrl = 'https://www.zhihu.com/question/' + target.id;
+              } else if (target.type === 'pin') {
+                title = String(target.excerpt_title || target.content?.[0]?.own_text || '').replace(/<[^>]+>/g, '').slice(0, 120);
+                if (target.id) itemUrl = 'https://www.zhihu.com/pin/' + target.id;
               }
-              upvotes = String(target.voteup_count || 0);
-            } else if (target.type === 'article') {
-              title = target.title || '';
-              if (target.url) {
-                const m = target.url.match(/\/articles\/(\d+)/);
-                if (m) {
-                  url = 'https://zhuanlan.zhihu.com/p/' + m[1];
-                }
-              }
-              upvotes = String(target.voteup_count || 0);
+              if (!title) continue;
+              const now = Math.floor(Date.now() / 1000);
+              const diff = now - ts;
+              let time = '';
+              if (diff < 60) time = '刚刚';
+              else if (diff < 3600) time = Math.floor(diff / 60) + ' 分钟前';
+              else if (diff < 86400) time = Math.floor(diff / 3600) + ' 小时前';
+              else if (diff < 365 * 86400) time = Math.floor(diff / 86400) + ' 天前';
+              else continue;
+              rows.push({ user, action, title, url: itemUrl, time, upvotes });
             }
-
-            // 必须有标题才处理
-            if (!title) {
-              return null;
-            }
-
-            // 计算时间
-            const now = Math.floor(Date.now() / 1000);
-            const diff = now - ts;
-            let time = '';
-            if (diff < 60) {
-              time = '刚刚';
-            } else if (diff < 3600) {
-              time = Math.floor(diff / 60) + ' 分钟前';
-            } else if (diff < 86400) {
-              time = Math.floor(diff / 3600) + ' 小时前';
-            } else if (diff < 365 * 86400) {
-              time = Math.floor(diff / 86400) + ' 天前';
-            } else {
-              return null; // 过滤掉太旧的数据
-            }
-
-            return {
-              user: user,
-              action: action,
-              title: title,
-              url: url,
-              time: time,
-              upvotes: upvotes
-            };
-          })
-          .filter(x => x !== null);
-      })()
-
-  - map:
-      user: ${{ item.user }}
-      action: ${{ item.action }}
-      title: ${{ item.title }}
-      time: ${{ item.time }}
-      upvotes: ${{ item.upvotes }}
-      url: ${{ item.url }}
-
-  - limit: ${{ args.limit }}
-
-columns: [user, action, title, time, upvotes]
+            url = payload?.paging?.is_end ? '' : String(payload?.paging?.next || '');
+            pages += 1;
+            if (!items.length) break;
+          }
+          return rows;
+        })()

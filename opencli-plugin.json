@@ -1,6 +1,6 @@
 {
   "name": "opencli-adapters",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Official/community YAML adapters for opencli — site scrapers loaded via plugin install",
   "opencli": ">=0.0.7"
 }

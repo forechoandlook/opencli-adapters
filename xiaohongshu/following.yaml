@@ -1,0 +1,56 @@
+site: xiaohongshu
+name: following
+description: "读取当前登录账号的关注列表（网页端不提供他人关注列表）"
+domain: www.xiaohongshu.com
+strategy: cookie
+browser: true
+timeoutSeconds: 60
+
+args:
+  limit:
+    type: int
+    default: 50
+    description: "最多返回条数；--all true 时忽略"
+  all:
+    type: bool
+    default: false
+    description: "返回当前登录账号的全部关注"
+
+columns: [id, name, avatar, url]
+
+pipeline:
+  - navigate:
+      url: https://www.xiaohongshu.com/explore
+      waitUntil: commit
+      reuseExistingTab: true
+  - evaluate:
+      retry: false
+      js: |
+        (async () => {
+          const wantAll = Boolean(args.all);
+          const limit = wantAll ? 5000 : Math.max(Number(args.limit) || 50, 1);
+          const pinia = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia;
+          const user = pinia?._s?.get?.('user');
+          if (!user || typeof user.getUserFollow !== 'function') {
+            throw new Error('未找到小红书用户状态，请确认已登录网页版');
+          }
+          await user.getUserFollow();
+          const raw = user.follow && user.follow._value !== undefined ? user.follow._value : user.follow;
+          const list = Array.isArray(raw) ? raw : [];
+          const rows = [];
+          const seen = new Set();
+          for (const item of list) {
+            if (rows.length >= limit) break;
+            const id = String(item?.rid || item?.userId || item?.user_id || '').split('_')[0].trim();
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            rows.push({
+              id,
+              name: String(item?.nickname || item?.nick_name || item?.nickName || '').trim(),
+              avatar: String(item?.images || item?.avatar || '').trim(),
+              url: 'https://www.xiaohongshu.com/user/profile/' + id
+            });
+          }
+          if (!rows.length) throw new Error('没有可读取的关注列表，请确认已登录小红书网页版');
+          return rows;
+        })()

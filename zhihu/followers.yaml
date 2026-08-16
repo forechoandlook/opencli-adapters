@@ -1,0 +1,95 @@
+site: zhihu
+name: followers
+description: "读取粉丝列表；默认当前登录用户，--all true 自动翻页"
+domain: www.zhihu.com
+strategy: cookie
+browser: true
+timeoutSeconds: 120
+
+args:
+  user:
+    type: str
+    positional: true
+    description: "url_token、个人主页 URL，或用户昵称；省略则为当前登录用户"
+  limit:
+    type: int
+    default: 40
+    description: "最多返回条数；--all true 时忽略"
+  all:
+    type: bool
+    default: false
+    description: "翻页直到没有更多；最多 3000 条"
+
+columns: [url_token, name, headline, followers, answers, articles, url]
+
+pipeline:
+  - navigate:
+      url: https://www.zhihu.com/
+      waitUntil: commit
+      reuseExistingTab: true
+  - evaluate:
+      retry: false
+      js: |
+        (async () => {
+          const raw = String(args.user || '').trim();
+          const wantAll = Boolean(args.all);
+          const limit = wantAll ? 3000 : Math.max(Number(args.limit) || 40, 1);
+          const pageSize = 20;
+          const MAX_PAGES = 150;
+
+          const get = async (url) => {
+            const response = await fetch(url, { credentials: 'include', headers: { 'x-requested-with': 'fetch' } });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.error) {
+              throw new Error('知乎接口失败: ' + (payload?.error?.message || response.status) + ' ' + url);
+            }
+            return payload;
+          };
+
+          let token = raw.replace(/[?#].*$/, '');
+          const peopleMatch = token.match(/zhihu\.com\/people\/([^/?#]+)/) || token.match(/zhihu\.com\/org\/([^/?#]+)/);
+          if (peopleMatch) token = decodeURIComponent(peopleMatch[1]);
+          token = token.replace(/\/+$/, '').split('/').pop() || token;
+
+          if (!token) {
+            const me = await get('https://www.zhihu.com/api/v4/me');
+            token = String(me?.url_token || '').trim();
+            if (!token) throw new Error('AUTH_REQUIRED: zhihu.com');
+          } else if (/[\u4e00-\u9fff\s]/.test(token) || token.length < 2) {
+            const search = await get('https://www.zhihu.com/api/v4/search_v3?t=people&q=' + encodeURIComponent(raw) + '&limit=5');
+            const hit = (search?.data || []).map(item => item.object || item).find(obj => obj?.url_token || obj?.type === 'people');
+            if (hit?.url_token) token = hit.url_token;
+          }
+
+          const include = 'data[*].answer_count,articles_count,follower_count,headline';
+          const rows = [];
+          let offset = 0;
+          let pages = 0;
+          while (pages < MAX_PAGES && rows.length < limit) {
+            const payload = await get(
+              'https://www.zhihu.com/api/v4/members/' + encodeURIComponent(token) +
+              '/followers?include=' + encodeURIComponent(include) +
+              '&offset=' + offset + '&limit=' + pageSize
+            );
+            const page = Array.isArray(payload?.data) ? payload.data : [];
+            if (!page.length) break;
+            for (const item of page) {
+              if (rows.length >= limit) break;
+              const urlToken = String(item.url_token || '').trim();
+              rows.push({
+                url_token: urlToken,
+                name: String(item.name || '').trim(),
+                headline: String(item.headline || '').replace(/\s+/g, ' ').trim(),
+                followers: Number(item.follower_count || 0),
+                answers: Number(item.answer_count || 0),
+                articles: Number(item.articles_count || 0),
+                url: urlToken ? ('https://www.zhihu.com/people/' + urlToken) : ''
+              });
+            }
+            if (payload?.paging?.is_end || page.length < pageSize) break;
+            offset += page.length;
+            pages += 1;
+          }
+          if (!rows.length) throw new Error('没有可读取的粉丝列表，请确认已登录且目标用户公开粉丝: ' + token);
+          return rows;
+        })()
