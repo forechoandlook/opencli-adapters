@@ -19,6 +19,10 @@ args:
     type: bool
     default: false
     description: "翻页直到没有更多；最多 3000 条"
+  refresh:
+    type: bool
+    default: false
+    description: "忽略本地 KV 中的关注列表缓存（默认缓存 1 小时）"
 
 capabilities:
   auth: true
@@ -27,6 +31,29 @@ capabilities:
 columns: [url_token, name, headline, followers, answers, articles, url]
 
 pipeline:
+  - evaluate:
+      retry: false
+      js: |
+        (() => {
+          const raw = String(args.user || '').trim();
+          let token = raw.replace(/[?#].*$/, '');
+          const peopleMatch = token.match(/zhihu\.com\/people\/([^/?#]+)/) || token.match(/zhihu\.com\/org\/([^/?#]+)/);
+          if (peopleMatch) token = decodeURIComponent(peopleMatch[1]);
+          token = token.replace(/\/+$/, '').split('/').pop() || token;
+          return { raw, token: token || '', cached_list: null };
+        })()
+  - kv_get:
+      key: zhihu:me.url_token
+      field: token
+      only_if_empty: true
+  - kv_get:
+      key: zhihu:resolve:${{ data.raw }}
+      field: token
+      only_if_empty: true
+  - kv_get:
+      key: zhihu:following:${{ data.token }}:list
+      field: cached_list
+      only_if_empty: true
   - navigate:
       url: https://www.zhihu.com/
       waitUntil: commit
@@ -36,23 +63,25 @@ pipeline:
       helpers: [zhihu-fetch]
       js: |
         (async () => {
-          const raw = String(args.user || '').trim();
+          const raw = String(data.raw || args.user || '').trim();
           const wantAll = Boolean(args.all);
+          const refresh = Boolean(args.refresh);
           const limit = wantAll ? 3000 : Math.max(Number(args.limit) || 40, 1);
           const pageSize = 20;
           const MAX_PAGES = 150;
           const get = zhihuGet;
 
-          let token = raw.replace(/[?#].*$/, '');
-          const peopleMatch = token.match(/zhihu\.com\/people\/([^/?#]+)/) || token.match(/zhihu\.com\/org\/([^/?#]+)/);
-          if (peopleMatch) token = decodeURIComponent(peopleMatch[1]);
-          token = token.replace(/\/+$/, '').split('/').pop() || token;
+          let token = String(data.token || '').trim();
+          const cached = Array.isArray(data.cached_list) ? data.cached_list : [];
+          if (!refresh && token && cached.length >= limit) {
+            return { token, rows: cached.slice(0, limit), from_cache: true };
+          }
 
           if (!token) {
             const me = await get('https://www.zhihu.com/api/v4/me');
             token = String(me?.url_token || '').trim();
             if (!token) throw new Error('AUTH_REQUIRED: zhihu.com');
-          } else if (/[\u4e00-\u9fff\s]/.test(token) || token.length < 2) {
+          } else if (raw && (/[\u4e00-\u9fff\s]/.test(token) || token.length < 2)) {
             const search = await get('https://www.zhihu.com/api/v4/search_v3?t=people&q=' + encodeURIComponent(raw) + '&limit=5');
             const hit = (search?.data || []).map(item => item.object || item).find(obj => obj?.url_token || obj?.type === 'people');
             if (hit?.url_token) token = hit.url_token;
@@ -88,5 +117,25 @@ pipeline:
             pages += 1;
           }
           if (!rows.length) throw new Error('没有可读取的关注列表，请确认已登录且目标用户公开关注: ' + token);
-          return rows;
+          return {
+            token,
+            resolve_key: raw && raw !== token ? raw : '',
+            rows
+          };
         })()
+  - kv_set:
+      key: zhihu:me.url_token
+      value: ${{ data.token }}
+      ttl: 30d
+      skip_empty: true
+  - kv_set:
+      key: zhihu:resolve:${{ data.resolve_key }}
+      value: ${{ data.token }}
+      ttl: 30d
+      skip_empty: true
+  - kv_set:
+      key: zhihu:following:${{ data.token }}:list
+      value: ${{ data.rows }}
+      ttl: 1h
+      skip_empty: true
+  - select: rows

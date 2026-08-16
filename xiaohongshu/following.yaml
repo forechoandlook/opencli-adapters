@@ -15,6 +15,10 @@ args:
     type: bool
     default: false
     description: "返回当前登录账号的全部关注"
+  refresh:
+    type: bool
+    default: false
+    description: "忽略本地 KV 中的关注列表缓存（默认缓存 1 小时）"
 
 capabilities:
   auth: true
@@ -23,6 +27,9 @@ capabilities:
 columns: [id, name, avatar, url]
 
 pipeline:
+  - kv_get:
+      key: xiaohongshu:following:me
+      field: cached
   - navigate:
       url: https://www.xiaohongshu.com/explore
       waitUntil: commit
@@ -34,11 +41,22 @@ pipeline:
       js: |
         (async () => {
           const wantAll = Boolean(args.all);
+          const refresh = Boolean(args.refresh);
           const limit = wantAll ? 5000 : Math.max(Number(args.limit) || 50, 1);
+          const cached = data.cached && typeof data.cached === 'object' ? data.cached : {};
+          const cachedRows = Array.isArray(cached.rows) ? cached.rows : [];
+          if (!refresh && cachedRows.length >= limit) {
+            return {
+              userId: String(cached.userId || ''),
+              rows: cachedRows.slice(0, limit),
+              from_cache: true
+            };
+          }
           const user = await waitPiniaUser(12);
           await user.getUserFollow();
           const raw = user.follow && user.follow._value !== undefined ? user.follow._value : user.follow;
           const list = Array.isArray(raw) ? raw : [];
+          const userId = String(user.userInfo?.userId || user.userId || user.user_id || '').trim();
           const rows = [];
           const seen = new Set();
           for (const item of list) {
@@ -54,5 +72,16 @@ pipeline:
             });
           }
           if (!rows.length) throw new Error('没有可读取的关注列表，请确认已登录小红书网页版');
-          return rows;
+          return { userId, rows };
         })()
+  - kv_set:
+      key: xiaohongshu:me.userId
+      value: ${{ data.userId }}
+      ttl: 30d
+      skip_empty: true
+  - kv_set:
+      key: xiaohongshu:following:me
+      value: ${{ data }}
+      ttl: 1h
+      skip_empty: true
+  - select: rows

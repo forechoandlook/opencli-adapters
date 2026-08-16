@@ -56,12 +56,18 @@ pipeline:
           const peopleMatch = token.match(/zhihu\.com\/people\/([^/?#]+)/) || token.match(/zhihu\.com\/org\/([^/?#]+)/);
           if (peopleMatch) token = decodeURIComponent(peopleMatch[1]);
           token = token.replace(/\/+$/, '').split('/').pop() || token;
+          const needResolve = !token || /[\u4e00-\u9fff\s]/.test(token) || token.length < 2;
           return {
             raw,
-            token,
+            token: needResolve ? '' : token,
+            lookup: needResolve ? raw : '',
             latest: data.latest || {}
           };
         })()
+  - kv_get:
+      key: zhihu:resolve:${{ data.lookup }}
+      field: token
+      only_if_empty: true
   - kv_get:
       key: zhihu:user:${{ data.token }}:latest
       field: latest
@@ -106,14 +112,12 @@ pipeline:
 
           let token = String(data.token || '').trim();
 
-          if (!token) throw new Error('缺少用户标识');
-
-          // If the token looks like a display name, resolve via search.
-          if (/[\u4e00-\u9fff\s]/.test(token) || token.length < 2) {
+          if (!token && raw) {
             const search = await get('https://www.zhihu.com/api/v4/search_v3?t=people&q=' + encodeURIComponent(raw) + '&limit=5');
             const hit = (search?.data || []).map(item => item.object || item).find(obj => obj?.url_token || obj?.type === 'people');
             if (hit?.url_token) token = hit.url_token;
           }
+          if (!token) throw new Error('缺少用户标识');
 
           const rows = [];
           const latestSeen = {};
@@ -207,6 +211,7 @@ pipeline:
           // Empty/deleted profiles return [] so batch archives can continue.
           return {
             token,
+            resolve_key: String(data.lookup || ''),
             latest_seen: latestSeen,
             rows
           };
@@ -214,5 +219,10 @@ pipeline:
   - kv_set:
       key: zhihu:user:${{ data.token }}:latest
       value: ${{ data.latest_seen }}
+      skip_empty: true
+  - kv_set:
+      key: zhihu:resolve:${{ data.resolve_key }}
+      value: ${{ data.token }}
+      ttl: 30d
       skip_empty: true
   - select: rows

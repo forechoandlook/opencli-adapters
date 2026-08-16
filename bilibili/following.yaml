@@ -24,6 +24,10 @@ args:
     type: int
     default: 5000
     description: "--all true 时的安全上限"
+  refresh:
+    type: bool
+    default: false
+    description: "忽略本地 KV 中的关注列表与 WBI 缓存"
 
 capabilities:
   auth: true
@@ -50,6 +54,14 @@ pipeline:
       key: bilibili:me.mid
       field: uid
       only_if_empty: true
+  - kv_get:
+      key: bilibili:wbi.keys
+      field: wbi
+      only_if_empty: true
+  - kv_get:
+      key: bilibili:following:${{ data.uid }}:list
+      field: cached_list
+      only_if_empty: true
   - navigate: https://www.bilibili.com
 
   - evaluate:
@@ -66,6 +78,11 @@ pipeline:
           : Math.min(Math.max(Number(${{ args.limit }}) || 50, 1), 5000);
         let uid = String(data.uid || '').trim();
         let isSelf = !uidInput || uidInput === 'undefined';
+        const refresh = Boolean(${{ args.refresh | default(false) | json }});
+        const cached = Array.isArray(data.cached_list) ? data.cached_list : [];
+        if (!refresh && /^\d+$/.test(uid) && cached.length >= maxResults) {
+          return { mid: isSelf ? uid : '', uid, rows: cached.slice(0, maxResults), wbi: data.wbi || {}, from_cache: true };
+        }
 
         async function apiGet(path, params, signed) {
           if (signed) return await wbiGet(path, params);
@@ -139,10 +156,24 @@ pipeline:
           return {
             // Only cache when this run resolved *self*
             mid: isSelf ? uid : '',
+            uid,
             rows,
+            wbi: currentWbiKeys()
           };
         })()
   - kv_set:
       key: bilibili:me.mid
       value: ${{ data.mid }}
+      ttl: 30d
+      skip_empty: true
+  - kv_set:
+      key: bilibili:wbi.keys
+      value: ${{ data.wbi }}
+      ttl: 6h
+      skip_empty: true
+  - kv_set:
+      key: bilibili:following:${{ data.uid }}:list
+      value: ${{ data.rows }}
+      ttl: 1h
+      skip_empty: true
   - select: rows

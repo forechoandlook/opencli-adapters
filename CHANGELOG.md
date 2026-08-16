@@ -1,6 +1,13 @@
 # Changelog
 
+## 0.1.8 — 2026-08-16
+
+- Cache login identity (`zhihu:me.url_token`, `xiaohongshu:me.userId`, `bilibili:me.mid`) for 30 days.
+- Cache following/followers lists for 1 hour (`--refresh true` to bypass).
+- Cache Bilibili WBI keys for 6 hours and username→mid / nickname→url_token resolution for 30 days.
+
 ## 0.1.7 — 2026-08-16
+
 
 - Declare `capabilities` on following / user / ask adapters (`auth`, `paginate`, `incremental`, `download`, `rich_text`).
 - Use shared `evaluate.helpers` (`wbi`, `zhihu-fetch`, `pinia-wait`) instead of inlined WBI/MD5 and pinia wait loops.
