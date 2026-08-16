@@ -1,0 +1,111 @@
+site: xiaohongshu
+name: ask
+description: "向小红书「点点」提问并等待完整回答（含富文本 HTML）"
+domain: www.xiaohongshu.com
+strategy: cookie
+browser: true
+timeoutSeconds: 180
+
+args:
+  text:
+    positional: true
+    type: string
+    required: true
+    description: 要提问的内容
+  timeout:
+    type: int
+    default: 90
+    description: 最长等待秒数
+
+columns: [role, text, html, url]
+
+pipeline:
+  - navigate:
+      url: https://www.xiaohongshu.com/ai_chat?from=sidebar&conversationId=
+      waitUntil: load
+      reuseExistingTab: false
+  - wait: 2
+  - evaluate:
+      retry: false
+      js: |
+        (async () => {
+          const text = String(args.text || '').trim();
+          const timeoutSec = Math.max(Number(args.timeout) || 90, 10);
+          if (!text) throw new Error('缺少提问内容');
+
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+          // 点点欢迎页有两个 textarea：第一个是静态占位，第二个才是真正绑定 v-model 的输入框。
+          const boxes = Array.from(document.querySelectorAll('textarea.textarea, textarea')).filter(el => {
+            const rect = el.getBoundingClientRect();
+            const ph = String(el.getAttribute('placeholder') || '');
+            return rect.width > 40 && rect.height > 16 && !ph.includes('搜索');
+          });
+          const composer = boxes[boxes.length - 1] || boxes[0];
+          if (!composer) {
+            return [{ role: 'system', text: '未找到点点输入框，请确认已登录小红书网页版', html: '', url: location.href }];
+          }
+
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+          composer.focus();
+          if (typeof composer.select === 'function') composer.select();
+          if (setter) setter.call(composer, text);
+          else composer.value = text;
+          composer.dispatchEvent(new Event('input', { bubbles: true }));
+          composer.dispatchEvent(new Event('change', { bubbles: true }));
+          await sleep(400);
+
+          const submit =
+            document.querySelector('.submit-button-wrapper:not(.disabled)') ||
+            document.querySelector('.submit-button-wrapper') ||
+            document.querySelector('button.ai-input-action-btn[type="submit"]');
+          if (submit) submit.click();
+          else composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+
+          const deadline = Date.now() + timeoutSec * 1000;
+          let lastHtml = '';
+          let lastText = '';
+          let stable = 0;
+
+          while (Date.now() < deadline) {
+            await sleep(1200);
+            const finished = document.querySelector('.ai-message.ai-message-finished, .ai-message-finished');
+            const blocks = Array.from(document.querySelectorAll(
+              '.ai-message.ai-message-finished .markdown-block, .ai-message-finished .markdown-block'
+            ));
+            // Streaming fallback while not finished.
+            const streamBlocks = blocks.length
+              ? blocks
+              : Array.from(document.querySelectorAll('.ai-message .markdown-block'));
+            if (!streamBlocks.length && !finished) continue;
+
+            const html = streamBlocks.map(b => b.innerHTML).join('\n').trim()
+              || (finished ? finished.innerHTML : '');
+            const plain = streamBlocks.map(b => (b.innerText || '').trim()).filter(Boolean).join('\n\n').trim()
+              || (finished ? String(finished.innerText || '').trim() : '');
+            if (!plain) continue;
+
+            if (html === lastHtml && plain === lastText) stable += 1;
+            else {
+              stable = 1;
+              lastHtml = html;
+              lastText = plain;
+            }
+
+            const isFinished = Boolean(document.querySelector('.ai-message.ai-message-finished, .ai-message-finished'));
+            if (isFinished && stable >= 1) break;
+            if (!isFinished && stable >= 3) break;
+          }
+
+          if (!lastText) {
+            return [
+              { role: 'user', text, html: '', url: location.href },
+              { role: 'system', text: '在 ' + timeoutSec + 's 内未拿到点点回答', html: '', url: location.href }
+            ];
+          }
+
+          return [
+            { role: 'user', text, html: '', url: location.href },
+            { role: 'assistant', text: lastText, html: lastHtml, url: location.href }
+          ];
+        })()

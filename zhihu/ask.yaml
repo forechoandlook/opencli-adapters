@@ -1,0 +1,133 @@
+site: zhihu
+name: ask
+description: "向知乎直答提问并等待完整回答（含富文本 HTML）"
+domain: www.zhihu.com
+strategy: cookie
+browser: true
+timeoutSeconds: 180
+
+args:
+  text:
+    positional: true
+    type: string
+    required: true
+    description: 要提问的内容
+  timeout:
+    type: int
+    default: 90
+    description: 最长等待秒数（流式接口通常几秒内结束）
+  mode:
+    type: str
+    default: FAST
+    choices: [FAST, DEEP]
+    description: "回答模式：FAST 快速 / DEEP 深度（如接口支持）"
+
+columns: [role, text, html, url, session_id]
+
+pipeline:
+  - navigate:
+      url: https://zhida.zhihu.com/
+      waitUntil: load
+      reuseExistingTab: false
+  - wait: 2
+  - evaluate:
+      retry: false
+      js: |
+        (async () => {
+          const text = String(args.text || '').trim();
+          const timeoutSec = Math.max(Number(args.timeout) || 90, 10);
+          const mode = String(args.mode || 'FAST').toUpperCase() === 'DEEP' ? 'DEEP' : 'FAST';
+          if (!text) throw new Error('缺少提问内容');
+
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+          const stripHtml = (html) => String(html || '')
+            .replace(/<cite[^>]*>.*?<\/cite>/gi, '')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/\s+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+
+          // Prefer the official stream API (avoids Draft.js untrusted-input issues).
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
+          let raw = '';
+          let sessionId = '';
+          try {
+            const response = await fetch('/ai_ingress/stream/completion', {
+              method: 'POST',
+              credentials: 'include',
+              signal: controller.signal,
+              headers: {
+                'content-type': 'application/json',
+                'x-requested-with': 'fetch',
+                accept: 'text/event-stream'
+              },
+              body: JSON.stringify({
+                knowledge_ids: ['KBT_GLOBAL', 'KBT_ZHIHU', 'KBT_PAPER', 'KBT_PERSONAL_KNOWLEDGE_BASE'],
+                quiz_type: 'QT_CHAT',
+                attachments: [],
+                message_source_type: 'text',
+                session_id: '',
+                zhida_source: 'zhida',
+                chat_mode: mode,
+                chat_model: 'CM_DEEP_SEEK_R1',
+                message_content: text,
+                push_interval: 50
+              })
+            });
+            if (!response.ok) {
+              const errText = await response.text().catch(() => '');
+              throw new Error('知乎直答接口失败: HTTP ' + response.status + ' ' + errText.slice(0, 200));
+            }
+            raw = await response.text();
+          } catch (e) {
+            clearTimeout(timer);
+            const msg = e && e.name === 'AbortError'
+              ? ('在 ' + timeoutSec + 's 内未拿到知乎直答回答')
+              : String(e && e.message || e);
+            return [
+              { role: 'user', text, html: '', url: location.href, session_id: '' },
+              { role: 'system', text: msg, html: '', url: location.href, session_id: '' }
+            ];
+          }
+          clearTimeout(timer);
+
+          let htmlParts = [];
+          let ended = false;
+          for (const line of raw.split('\n')) {
+            if (!line.startsWith('data:')) continue;
+            let obj = null;
+            try { obj = JSON.parse(line.slice(5).trim()); } catch { continue; }
+            const event = obj.event || '';
+            if (event === 'Init') {
+              sessionId = String(obj?.data?.session_id || sessionId || '');
+            } else if (event === 'Answer') {
+              const summary = obj?.data?.summary;
+              if (typeof summary === 'string' && summary.length) htmlParts.push(summary);
+            } else if (event === 'End') {
+              ended = true;
+            }
+          }
+
+          const html = htmlParts.join('').trim();
+          const plain = stripHtml(html);
+          const url = sessionId
+            ? ('https://zhida.zhihu.com/search/' + sessionId)
+            : location.href;
+
+          if (!plain) {
+            return [
+              { role: 'user', text, html: '', url, session_id: sessionId },
+              { role: 'system', text: '直答流结束但未解析到正文' + (ended ? '' : '（未收到 End 事件）'), html: '', url, session_id: sessionId }
+            ];
+          }
+
+          return [
+            { role: 'user', text, html: '', url, session_id: sessionId },
+            { role: 'assistant', text: plain, html, url, session_id: sessionId }
+          ];
+        })()

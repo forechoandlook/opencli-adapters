@@ -2,6 +2,8 @@
 
 ## 0.1.5 — 2026-08-16
 
+- Added `xiaohongshu ask` for 点点 AI chat (`/ai_chat`), returning plain text plus rich HTML.
+- Added `zhihu ask` for 知乎直答 (`zhida.zhihu.com`), returning plain text plus rich HTML.
 - Added `zhihu following` / `zhihu followers` with pagination (`--all true`). Omit the user to read the logged-in account.
 - Added `xiaohongshu following` for the current logged-in account (web only exposes this list).
 - Added `bilibili user` to list a space's videos, columns and dynamics with WBI pagination (`--all true`, `--type video|article|dynamic|all`, `--incremental true`). Video rows include `download_command`.
