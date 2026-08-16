@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.6 — 2026-08-16
+
+- `bilibili user-videos` auto-paginates when `--limit` exceeds the 50-item page size (e.g. 100 recent videos).
+- `zhihu user` returns an empty list for deleted/empty profiles instead of hard-failing (batch-friendly).
+- `xiaohongshu following` waits for the pinia user store after navigate to reduce false “未登录” errors.
+
 ## 0.1.5 — 2026-08-16
 
 - Added `xiaohongshu ask` for 点点 AI chat (`/ai_chat`), returning plain text plus rich HTML.
