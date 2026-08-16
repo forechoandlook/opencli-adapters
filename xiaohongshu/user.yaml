@@ -25,7 +25,7 @@ args:
     default: false
     description: "若本地已记录该用户最新笔记，则仅返回更新部分，并更新游标"
 
-columns: [id, title, type, likes, date, url, download_command]
+columns: [id, title, type, likes, date, cover, media_urls, url, download_command]
 
 pipeline:
   - evaluate: |
@@ -71,12 +71,16 @@ pipeline:
             let url = 'https://www.xiaohongshu.com/explore/' + noteId;
             if (xsecToken) url += '?xsec_token=' + encodeURIComponent(xsecToken) + '&xsec_source=pc_user';
             const ts = Number(noteCard.time || noteCard.timestamp || entry?.time || 0);
+            const cover = noteCard.cover || {};
+            const coverUrl = String(cover.urlDefault || cover.url_default || cover.urlPre || cover.url_pre || cover.url || noteCard.image || '').trim();
             const row = {
               id: noteId,
               title: String(noteCard.displayTitle || noteCard.display_title || noteCard.title || '').trim(),
               type: String(noteCard.type || '').trim(),
               likes,
               date: ts > 0 ? new Date(ts < 1e12 ? ts * 1000 : ts).toISOString().slice(0, 10) : '',
+              cover: coverUrl,
+              media_urls: coverUrl ? [coverUrl] : [],
               url,
               download_command: url.includes('xsec_token=') ? ('opencli xiaohongshu download ' + JSON.stringify(url)) : ''
             };

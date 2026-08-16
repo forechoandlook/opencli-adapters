@@ -1,6 +1,6 @@
 site: bilibili
 name: following
-description: 获取 Bilibili 用户的关注列表
+description: "获取 Bilibili 用户的关注列表；--all true 时自动翻页"
 domain: www.bilibili.com
 strategy: cookie
 
@@ -15,9 +15,17 @@ args:
   limit:
     type: int
     default: 50
-    description: 每页数量 (最大 50)
+    description: "单页数量（最大 50）；--all true 时作为每次请求的页大小"
+  all:
+    type: bool
+    default: false
+    description: "自动翻页，尽可能获取全部关注用户（最多 5000 人）"
+  max-results:
+    type: int
+    default: 5000
+    description: "--all true 时的安全上限"
 
-columns: [mid, name, sign, following, fans]
+columns: [mid, name, sign, following, fans, avatar]
 
 pipeline:
   # When uid omitted, fill mid from opencli KV before hitting nav.
@@ -43,8 +51,12 @@ pipeline:
   - evaluate: |
       (async () => {
         const uidInput = String(args.uid || '').trim();
-        const pn = ${{ args.page }};
-        const ps = Math.min(${{ args.limit }}, 50);
+        const startPage = Math.max(Number(${{ args.page }}) || 1, 1);
+        const wantAll = Boolean(${{ args.all | default(false) | json }});
+        const pageSize = Math.min(Math.max(Number(${{ args.limit }}) || 50, 1), 50);
+        const maxResults = wantAll
+          ? Math.min(Math.max(Number(${{ args['max-results'] | default(5000) | json }}) || 5000, 1), 5000)
+          : pageSize;
         let uid = String(data.uid || '').trim();
         let isSelf = !uidInput || uidInput === 'undefined';
 
@@ -150,26 +162,41 @@ pipeline:
           }
         }
 
-        const res = await fetch(
-          'https://api.bilibili.com/x/relation/followings?vmid=' + uid + '&pn=' + pn + '&ps=' + ps + '&order=desc',
-          { credentials: 'include' }
-        );
-        const payload = await res.json();
-
-        if (payload.code !== 0) {
-          throw new Error('获取关注列表失败: ' + payload.message + ' (' + payload.code + ')');
-        }
-
-        const list = payload.data?.list || [];
-        const rows = list.length === 0
-          ? [{ mid: '-', name: '共 ' + (payload.data?.total || 0) + ' 人关注，当前页无数据', sign: '', following: '', fans: '' }]
-          : list.map((u) => ({
+        const rows = [];
+        let pn = startPage;
+        let total = 0;
+        while (rows.length < maxResults) {
+          // Keep ps stable across pages: Bilibili derives the offset from
+          // pn * ps, so shrinking the last request would duplicate rows.
+          const ps = pageSize;
+          const res = await fetch(
+            'https://api.bilibili.com/x/relation/followings?vmid=' + uid + '&pn=' + pn + '&ps=' + ps + '&order=desc',
+            { credentials: 'include' }
+          );
+          const payload = await res.json();
+          if (payload.code !== 0) {
+            throw new Error('获取关注列表失败: ' + payload.message + ' (' + payload.code + ')');
+          }
+          const list = payload.data?.list || [];
+          total = Number(payload.data?.total || total || 0);
+          for (const u of list) {
+            rows.push({
               mid: u.mid,
               name: u.uname,
               sign: (u.sign || '').slice(0, 40),
               following: u.attribute === 6 ? '互相关注' : '已关注',
-              fans: u.official_verify?.desc || ''
-            }));
+              fans: u.official_verify?.desc || '',
+              avatar: String(u.face || '')
+            });
+            if (rows.length >= maxResults) break;
+          }
+          if (!wantAll || !list.length || list.length < ps || rows.length >= total) break;
+          pn += 1;
+        }
+
+        if (!rows.length) {
+          rows.push({ mid: '-', name: '共 ' + total + ' 人关注，当前页无数据', sign: '', following: '', fans: '', avatar: '' });
+        }
 
         return {
           // Only cache when this run resolved *self*

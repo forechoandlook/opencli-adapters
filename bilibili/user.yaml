@@ -33,7 +33,7 @@ args:
     default: pubdate
     description: "视频排序：pubdate、click、stow"
 
-columns: [kind, id, rank, title, author, date, plays, likes, url, download_command]
+columns: [kind, id, rank, title, author, date, plays, likes, cover, media_urls, url, download_command]
 
 pipeline:
   - evaluate:
@@ -169,6 +169,8 @@ pipeline:
                   date: item.created ? new Date(item.created * 1000).toISOString().slice(0, 10) : '',
                   plays: item.play || 0,
                   likes: item.like || 0,
+                  cover: String(item.pic || ''),
+                  media_urls: item.pic ? [String(item.pic)] : [],
                   url: bvid ? 'https://www.bilibili.com/video/' + bvid : '',
                   download_command: bvid ? 'opencli bilibili download ' + bvid : ''
                 };
@@ -215,6 +217,8 @@ pipeline:
                   date: item.publish_time ? new Date(item.publish_time * 1000).toISOString().slice(0, 10) : '',
                   plays: item.stats?.view || 0,
                   likes: item.stats?.like || 0,
+                  cover: String(item.banner_url || item.image_urls?.[0] || ''),
+                  media_urls: [...new Set([item.banner_url, ...(Array.isArray(item.image_urls) ? item.image_urls : [])].filter(Boolean).map(String))],
                   url: id ? 'https://www.bilibili.com/read/cv' + id : '',
                   download_command: ''
                 };
@@ -253,6 +257,13 @@ pipeline:
                 if (!title && archive?.title) title = archive.title;
                 const article = item.modules?.module_dynamic?.major?.article;
                 if (!title && article?.title) title = article.title;
+                const major = item.modules?.module_dynamic?.major || {};
+                const mediaUrls = [
+                  major.archive?.cover,
+                  ...(Array.isArray(major.article?.covers) ? major.article.covers : []),
+                  ...(Array.isArray(major.draw?.items) ? major.draw.items.map(pic => pic?.src) : []),
+                  ...(Array.isArray(major.opus?.pics) ? major.opus.pics.map(pic => pic?.url || pic?.src) : [])
+                ].filter(Boolean).map(String);
                 const row = {
                   kind: 'dynamic',
                   id,
@@ -262,6 +273,8 @@ pipeline:
                   date: item.modules?.module_author?.pub_ts ? new Date(item.modules.module_author.pub_ts * 1000).toISOString().slice(0, 10) : '',
                   plays: archive?.stat?.play || 0,
                   likes: item.modules?.module_stat?.like?.count || 0,
+                  cover: mediaUrls[0] || '',
+                  media_urls: [...new Set(mediaUrls)],
                   url: id ? 'https://t.bilibili.com/' + id : '',
                   download_command: archive?.bvid ? 'opencli bilibili download ' + archive.bvid : ''
                 };

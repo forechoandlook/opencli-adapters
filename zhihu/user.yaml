@@ -30,7 +30,7 @@ args:
     default: false
     description: "若本地已记录该用户最新内容，则仅返回更新部分，并更新游标"
 
-columns: [kind, id, rank, title, date, votes, url]
+columns: [kind, id, rank, title, date, votes, cover, media_urls, url, download_command]
 
 pipeline:
   - evaluate:
@@ -86,6 +86,27 @@ pipeline:
             const n = Number(value || 0);
             return Number.isFinite(n) && n > 0 ? new Date(n * 1000).toISOString().slice(0, 10) : '';
           };
+          const mediaUrls = (item) => {
+            const urls = [];
+            const add = value => {
+              let url = String(value || '').trim();
+              if (url.startsWith('//')) url = 'https:' + url;
+              if (/^https?:\/\//i.test(url) && !url.startsWith('data:')) urls.push(url);
+            };
+            add(item?.image_url);
+            add(item?.thumbnail);
+            add(item?.video?.thumbnail);
+            for (const entry of Array.isArray(item?.content) ? item.content : []) {
+              add(entry?.url || entry?.image_url || entry?.original_url);
+            }
+            const html = typeof item?.content === 'string' ? item.content : '';
+            for (const match of html.matchAll(/<img[^>]+(?:data-original|data-actualsrc|data-src|src)=["']([^"']+)["']/gi)) add(match[1]);
+            return [...new Set(urls)];
+          };
+          const withMedia = (row, item) => {
+            const urls = mediaUrls(item);
+            return { ...row, cover: urls[0] || '', media_urls: urls, download_command: row.url ? ('opencli zhihu download ' + JSON.stringify(row.url)) : '' };
+          };
 
           let token = String(data.token || '').trim();
 
@@ -106,7 +127,7 @@ pipeline:
           if (want('answer')) endpoints.push({
             kind: 'answer',
             url: (offset) => 'https://www.zhihu.com/api/v4/members/' + encodeURIComponent(token) + '/answers?include=data[*].is_normal,content,voteup_count,created_time,updated_time,question&offset=' + offset + '&limit=' + pageSize + '&sort_by=created',
-            map: (item, rank) => ({
+            map: (item, rank) => withMedia({
               kind: 'answer',
               id: String(item.id || ''),
               rank,
@@ -116,12 +137,12 @@ pipeline:
               url: item.question?.id && item.id
                 ? 'https://www.zhihu.com/question/' + item.question.id + '/answer/' + item.id
                 : (item.url || '')
-            })
+            }, item)
           });
           if (want('article')) endpoints.push({
             kind: 'article',
-            url: (offset) => 'https://www.zhihu.com/api/v4/members/' + encodeURIComponent(token) + '/articles?include=data[*].voteup_count,created,updated&offset=' + offset + '&limit=' + pageSize + '&sort_by=created',
-            map: (item, rank) => ({
+            url: (offset) => 'https://www.zhihu.com/api/v4/members/' + encodeURIComponent(token) + '/articles?include=data[*].voteup_count,created,updated,content,image_url&offset=' + offset + '&limit=' + pageSize + '&sort_by=created',
+            map: (item, rank) => withMedia({
               kind: 'article',
               id: String(item.id || ''),
               rank,
@@ -129,12 +150,12 @@ pipeline:
               date: toIso(item.created || item.created_time),
               votes: Number(item.voteup_count || 0),
               url: item.id ? 'https://zhuanlan.zhihu.com/p/' + item.id : (item.url || '')
-            })
+            }, item)
           });
           if (want('zvideo')) endpoints.push({
             kind: 'zvideo',
             url: (offset) => 'https://www.zhihu.com/api/v4/members/' + encodeURIComponent(token) + '/zvideos?offset=' + offset + '&limit=' + pageSize,
-            map: (item, rank) => ({
+            map: (item, rank) => withMedia({
               kind: 'zvideo',
               id: String(item.id || item.video_id || ''),
               rank,
@@ -144,12 +165,12 @@ pipeline:
               url: item.video_id || item.id
                 ? 'https://www.zhihu.com/zvideo/' + (item.id || item.video_id)
                 : (item.url || '')
-            })
+            }, item)
           });
           if (want('pin')) endpoints.push({
             kind: 'pin',
             url: (offset) => 'https://www.zhihu.com/api/v4/members/' + encodeURIComponent(token) + '/pins?offset=' + offset + '&limit=' + pageSize,
-            map: (item, rank) => ({
+            map: (item, rank) => withMedia({
               kind: 'pin',
               id: String(item.id || ''),
               rank,
@@ -157,7 +178,7 @@ pipeline:
               date: toIso(item.created || item.created_time),
               votes: Number(item.like_count || item.reaction_count || 0),
               url: item.id ? 'https://www.zhihu.com/pin/' + item.id : (item.url || '')
-            })
+            }, item)
           });
 
           for (const ep of endpoints) {

@@ -5,6 +5,8 @@
 - Added `bilibili user` to list a space's videos, columns and dynamics with WBI pagination (`--all true`, `--type video|article|dynamic|all`, `--incremental true`). Video rows include `download_command`.
 - Added `zhihu user` to page a member's answers, articles, zvideos and pins (`--all true`, `--incremental true`).
 - `xiaohongshu user` now prefers `/api/sns/web/v1/user_posted` cursor paging instead of a short scroll, emits signed `download_command` when `xsec_token` is present, and supports `--incremental true`.
+- User-content rows now expose `cover` and `media_urls`; Zhihu rows include a per-item `download_command`, while Xiaohongshu keeps the signed command required to download every original image/video from a note.
+- `bilibili following --all true` now walks the following-list pages up to the requested limit and includes avatar URLs.
 
 ## 0.1.4 — 2026-08-10
 
