@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5 — 2026-08-16
+
+- Added `bilibili user` to list a space's videos, columns and dynamics with WBI pagination (`--all true`, `--type video|article|dynamic|all`, `--incremental true`). Video rows include `download_command`.
+- Added `zhihu user` to page a member's answers, articles, zvideos and pins (`--all true`, `--incremental true`).
+- `xiaohongshu user` now prefers `/api/sns/web/v1/user_posted` cursor paging instead of a short scroll, emits signed `download_command` when `xsec_token` is present, and supports `--incremental true`.
+
 ## 0.1.4 — 2026-08-10
 
 - Added `douyin feed` and `douyin search`, returning stable `aweme_id` values that can be passed to `douyin download`.

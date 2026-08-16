@@ -1,22 +1,31 @@
 site: xiaohongshu
 name: user
-description: "Get public notes from a Xiaohongshu user profile"
+description: "读取指定用户公开笔记；优先走 user_posted 翻页，--all true 尽量拉完"
 domain: www.xiaohongshu.com
 strategy: cookie
 browser: true
+timeoutSeconds: 180
 
 args:
   id:
     positional: true
     type: string
     required: true
-    description: "User id or profile URL"
+    description: "用户 ID 或个人主页 URL"
   limit:
     type: int
-    default: 15
-    description: Number of notes to return
+    default: 30
+    description: "最多返回条数；--all true 时忽略"
+  all:
+    type: bool
+    default: false
+    description: "沿 cursor 翻页直到没有更多；最多 2000 条"
+  incremental:
+    type: bool
+    default: false
+    description: "若本地已记录该用户最新笔记，则仅返回更新部分，并更新游标"
 
-columns: [id, title, type, likes, url]
+columns: [id, title, type, likes, date, url, download_command]
 
 pipeline:
   - evaluate: |
@@ -25,68 +34,130 @@ pipeline:
         const trimmed = (input || '').trim();
         const withoutQuery = trimmed.replace(/[?#].*$/, '');
         const matched = withoutQuery.match(/\/user\/profile\/([a-zA-Z0-9]+)/);
-        if (matched && matched[1]) return matched[1];
-        return withoutQuery.replace(/\/+$/, '').split('/').pop() || withoutQuery;
+        const id = matched && matched[1] ? matched[1] : (withoutQuery.replace(/\/+$/, '').split('/').pop() || withoutQuery);
+        return { userId: id, latest: {} };
       })()
-  - navigate: https://www.xiaohongshu.com/user/profile/${{ data }}
-  - scroll:
-      times: 3
-      delay: 1500
-  - evaluate: |
-      (() => {
-        const userId = ${{ data | json }};
-        const userStore = window.__INITIAL_STATE__?.user || {};
-        const noteGroups = userStore.notes?._value || userStore.notes || [];
+  - kv_get:
+      key: xiaohongshu:user:${{ data.userId }}:latest
+      field: latest
+      only_if_empty: true
+  - navigate:
+      url: https://www.xiaohongshu.com/user/profile/${{ data.userId }}
+      settleMs: 2000
+      reuseExistingTab: true
+  - evaluate:
+      retry: false
+      js: |
+        (async () => {
+          const userId = String(data.userId || '').trim();
+          const wantAll = Boolean(args.all);
+          const wantIncremental = Boolean(args.incremental);
+          const limit = wantAll ? 2000 : Math.max(Number(args.limit) || 30, 1);
+          const marker = String(data.latest?.note?.id || '');
+          const rows = [];
+          const seen = new Set();
+          let hitMarker = false;
+          let latestSeen = {};
 
-        function flatten(groups) {
-          if (!Array.isArray(groups)) return [];
-          const notes = [];
-          for (const group of groups) {
-            if (!group) continue;
-            if (Array.isArray(group)) {
-              for (const item of group) { if (item) notes.push(item); }
-              continue;
+          const pushCard = (entry) => {
+            const noteCard = entry?.noteCard || entry?.note_card || entry;
+            if (!noteCard || typeof noteCard !== 'object') return;
+            const noteId = String(noteCard.noteId || noteCard.note_id || entry?.noteId || entry?.id || '').trim();
+            if (!noteId || seen.has(noteId)) return;
+            seen.add(noteId);
+            const uid = String(noteCard.user?.userId || noteCard.user?.user_id || userId || '').trim();
+            const xsecToken = String(entry?.xsecToken || entry?.xsec_token || noteCard.xsecToken || noteCard.xsec_token || '').trim();
+            const likes = String(noteCard.interactInfo?.likedCount || noteCard.interact_info?.liked_count || noteCard.liked_count || 0);
+            let url = 'https://www.xiaohongshu.com/explore/' + noteId;
+            if (xsecToken) url += '?xsec_token=' + encodeURIComponent(xsecToken) + '&xsec_source=pc_user';
+            const ts = Number(noteCard.time || noteCard.timestamp || entry?.time || 0);
+            const row = {
+              id: noteId,
+              title: String(noteCard.displayTitle || noteCard.display_title || noteCard.title || '').trim(),
+              type: String(noteCard.type || '').trim(),
+              likes,
+              date: ts > 0 ? new Date(ts < 1e12 ? ts * 1000 : ts).toISOString().slice(0, 10) : '',
+              url,
+              download_command: url.includes('xsec_token=') ? ('opencli xiaohongshu download ' + JSON.stringify(url)) : ''
+            };
+            if (!latestSeen.id) latestSeen = { id: row.id, url: row.url, date: row.date };
+            if (wantIncremental && marker && row.id === marker) {
+              hitMarker = true;
+              return;
             }
-            notes.push(group);
+            rows.push(row);
+          };
+
+          let cursor = '';
+          let pages = 0;
+          const MAX_PAGES = 80;
+          while (pages < MAX_PAGES && rows.length < limit && !hitMarker) {
+            const qs = new URLSearchParams({
+              num: String(Math.min(30, limit - rows.length)),
+              cursor,
+              user_id: userId,
+              image_formats: 'jpg,webp,avif'
+            });
+            let payload = null;
+            try {
+              const resp = await fetch('/api/sns/web/v1/user_posted?' + qs.toString(), {
+                credentials: 'include',
+                headers: { accept: 'application/json' }
+              });
+              payload = await resp.json();
+            } catch (e) {
+              break;
+            }
+            if (payload?.code && payload.code !== 0 && payload.success === false) break;
+            const notes = payload?.data?.notes || payload?.data?.note_list || [];
+            if (!Array.isArray(notes) || !notes.length) break;
+            for (const note of notes) {
+              if (rows.length >= limit || hitMarker) break;
+              pushCard(note);
+            }
+            const hasMore = Boolean(payload?.data?.has_more);
+            cursor = String(payload?.data?.cursor || '');
+            pages += 1;
+            if (hitMarker || !hasMore || !cursor) break;
           }
-          return notes;
-        }
 
-        const notes = flatten(noteGroups);
-        const rows = [];
-        const seen = new Set();
+          if (!rows.length) {
+            const userStore = window.__INITIAL_STATE__?.user || {};
+            const noteGroups = userStore.notes?._value || userStore.notes || [];
+            const flatten = (groups) => {
+              if (!Array.isArray(groups)) return [];
+              const notes = [];
+              for (const group of groups) {
+                if (!group) continue;
+                if (Array.isArray(group)) notes.push(...group.filter(Boolean));
+                else notes.push(group);
+              }
+              return notes;
+            };
+            for (const entry of flatten(noteGroups)) {
+              if (rows.length >= limit || hitMarker) break;
+              pushCard(entry);
+            }
+          }
 
-        for (const entry of notes) {
-          const noteCard = entry?.noteCard || entry?.note_card || entry;
-          if (!noteCard || typeof noteCard !== 'object') continue;
-
-          const noteId = (noteCard.noteId || noteCard.note_id || entry?.noteId || entry?.note_id || entry?.id || '').toString().trim();
-          if (!noteId || seen.has(noteId)) continue;
-          seen.add(noteId);
-
-          const uid = (noteCard.user?.userId || noteCard.user?.user_id || userId || '').toString().trim();
-          const xsecToken = (entry?.xsecToken || entry?.xsec_token || noteCard.xsecToken || noteCard.xsec_token || '').toString().trim();
-          const likes = (noteCard.interactInfo?.likedCount || noteCard.interact_info?.liked_count || 0).toString();
-
-          let url = 'https://www.xiaohongshu.com/user/profile/' + (uid || userId) + '/' + noteId;
-          if (xsecToken) url += '?xsec_token=' + encodeURIComponent(xsecToken) + '&xsec_source=pc_user';
-
-          rows.push({
-            id: noteId,
-            title: (noteCard.displayTitle || noteCard.display_title || noteCard.title || '').toString().trim(),
-            type: (noteCard.type || '').toString().trim(),
-            likes: likes,
-            url: url,
-          });
-        }
-
-        if (rows.length === 0) throw new Error('No public notes found for this Xiaohongshu user.');
-        return rows;
-      })()
-  - map:
-      id: ${{ item.id }}
-      title: ${{ item.title }}
-      type: ${{ item.type }}
-      likes: ${{ item.likes }}
-      url: ${{ item.url }}
-  - limit: ${{ args.limit | default(15) }}
+          if (!rows.length) {
+            if (wantIncremental) {
+              return {
+                userId,
+                latest_seen: latestSeen.id ? { note: latestSeen } : {},
+                rows: []
+              };
+            }
+            throw new Error('该用户没有可读取的公开笔记，或需要登录后重试');
+          }
+          return {
+            userId,
+            latest_seen: latestSeen.id ? { note: latestSeen } : {},
+            rows: rows.slice(0, limit)
+          };
+        })()
+  - kv_set:
+      key: xiaohongshu:user:${{ data.userId }}:latest
+      value: ${{ data.latest_seen }}
+      skip_empty: true
+  - select: rows

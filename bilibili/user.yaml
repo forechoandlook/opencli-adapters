@@ -1,0 +1,303 @@
+site: bilibili
+name: user
+description: "读取指定用户尽可能完整的投稿视频、专栏、动态；--all true 时自动翻页"
+domain: www.bilibili.com
+strategy: cookie
+browser: true
+timeoutSeconds: 180
+
+args:
+  uid:
+    type: str
+    required: true
+    positional: true
+    description: "UID、空间 URL 或用户名"
+  type:
+    type: str
+    default: all
+    choices: [all, video, article, dynamic]
+    description: "内容类型；all 会依次拉取视频、专栏、动态"
+  limit:
+    type: int
+    default: 50
+    description: "每种类型最多返回条数；--all true 时忽略"
+  all:
+    type: bool
+    default: false
+    description: "翻页直到该类型没有更多；单类型最多 5000 条以防卡死"
+  incremental:
+    type: bool
+    default: false
+    description: "若本地已记录该用户最新内容，则仅返回更新部分，并更新游标"
+  order:
+    default: pubdate
+    description: "视频排序：pubdate、click、stow"
+
+columns: [kind, id, rank, title, author, date, plays, likes, url, download_command]
+
+pipeline:
+  - evaluate:
+      retry: false
+      js: |
+        (() => ({ latest: {} }))()
+  - navigate:
+      url: https://www.bilibili.com
+      reuseExistingTab: true
+  - evaluate:
+      retry: false
+      js: |
+        (() => {
+          const raw = String(args.uid || '').trim();
+          let uid = raw.replace(/[?#].*$/, '');
+          const spaceMatch = uid.match(/space\.bilibili\.com\/(\d+)/);
+          if (spaceMatch) uid = spaceMatch[1];
+          uid = uid.replace(/\/+$/, '').split('/').pop() || uid;
+          return {
+            raw,
+            uid,
+            latest: data.latest || {}
+          };
+        })()
+  - kv_get:
+      key: bilibili:user:${{ data.uid }}:latest
+      field: latest
+      only_if_empty: true
+  - evaluate:
+      retry: false
+      js: |
+        (async () => {
+          const uidInput = String(data.raw || args.uid || '').trim();
+          const kindFilter = String(args.type || 'all').toLowerCase();
+          const wantAll = Boolean(args.all);
+          const wantIncremental = Boolean(args.incremental);
+          const perKindLimit = wantAll ? 5000 : Math.max(Number(args.limit) || 50, 1);
+          const order = String(args.order || 'pubdate');
+          const MAX_PAGES = 200;
+          const latestMarkers = (data.latest && typeof data.latest === 'object') ? data.latest : {};
+
+          const MIXIN_KEY_ENC_TAB = [
+            46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,
+            33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,
+            61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,
+            36,20,34,44,52
+          ];
+          function md5(string) {
+            function utf8Encode(s) { return unescape(encodeURIComponent(s)); }
+            string = utf8Encode(string);
+            function rotl(v,s){return(v<<s)|(v>>>(32-s));}
+            function add(x,y){return((x&0x7FFFFFFF)+(y&0x7FFFFFFF))^(x&0x80000000)^(y&0x80000000);}
+            function f1(x,y,z){return(x&y)|((~x)&z);}
+            function f2(x,y,z){return(x&z)|(y&(~z));}
+            function f3(x,y,z){return x^y^z;}
+            function f4(x,y,z){return y^(x|(~z));}
+            function step(fn,a,b,c,d,x,s,ac){return add(rotl(add(add(a,fn(b,c,d)),add(x,ac)),s),b);}
+            const len=string.length;const nblk=((len+8)>>>6)+1;const blks=new Array(nblk*16).fill(0);
+            for(let i=0;i<len;i++)blks[i>>>2]|=string.charCodeAt(i)<<((i%4)*8);
+            blks[len>>>2]|=0x80<<((len%4)*8);blks[nblk*16-2]=len*8;
+            let a=0x67452301,b=0xEFCDAB89,c=0x98BADCFE,d=0x10325476;
+            const S=[7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+            const K=[0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,0x698098d8,0x8b44f7af,0xffff5bb1,0x895cd7be,0x6b901122,0xfd987193,0xa679438e,0x49b40821,0xf61e2562,0xc040b340,0x265e5a51,0xe9b6c7aa,0xd62f105d,0x02441453,0xd8a1e681,0xe7d3fbc8,0x21e1cde6,0xc33707d6,0xf4d50d87,0x455a14ed,0xa9e3e905,0xfcefa3f8,0x676f02d9,0x8d2a4c8a,0xfffa3942,0x8771f681,0x6d9d6122,0xfde5380c,0xa4beea44,0x4bdecfa9,0xf6bb4b60,0xbebfbc70,0x289b7ec6,0xeaa127fa,0xd4ef3085,0x04881d05,0xd9d4d039,0xe6db99e5,0x1fa27cf8,0xc4ac5665,0xf4292244,0x432aff97,0xab9423a7,0xfc93a039,0x655b59c3,0x8f0ccc92,0xffeff47d,0x85845dd1,0x6fa87e4f,0xfe2ce6e0,0xa3014314,0x4e0811a1,0xf7537e82,0xbd3af235,0x2ad7d2bb,0xeb86d391];
+            const G=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,1,6,11,0,5,10,15,4,9,14,3,8,13,2,7,12,5,8,11,14,1,4,7,10,13,0,3,6,9,12,15,2,0,7,14,5,12,3,10,1,8,15,6,13,4,11,2,9];
+            const FN=[f1,f1,f1,f1,f1,f1,f1,f1,f1,f1,f1,f1,f1,f1,f1,f1,f2,f2,f2,f2,f2,f2,f2,f2,f2,f2,f2,f2,f2,f2,f2,f2,f3,f3,f3,f3,f3,f3,f3,f3,f3,f3,f3,f3,f3,f3,f3,f3,f4,f4,f4,f4,f4,f4,f4,f4,f4,f4,f4,f4,f4,f4,f4,f4];
+            for(let j=0;j<blks.length;j+=16){
+              let aa=a,bb=b,cc=c,dd=d;
+              for(let i=0;i<64;i++){
+                a=step(FN[i],a,b,c,d,blks[j+G[i]],S[i],K[i]);
+                const t=d;d=c;c=b;b=a;a=t;
+              }
+              a=add(a,aa);b=add(b,bb);c=add(c,cc);d=add(d,dd);
+            }
+            function hex(n){let s='';for(let i=0;i<4;i++)s+=('0'+((n>>>(i*8))&0xFF).toString(16)).slice(-2);return s;}
+            return hex(a)+hex(b)+hex(c)+hex(d);
+          }
+          const navResp = await fetch('https://api.bilibili.com/x/web-interface/nav', { credentials: 'include' });
+          const nav = await navResp.json();
+          const wbiImg = nav?.data?.wbi_img || {};
+          const imgKey = (wbiImg.img_url || '').split('/').pop()?.split('.')[0] || '';
+          const subKey = (wbiImg.sub_url || '').split('/').pop()?.split('.')[0] || '';
+          const mixinKey = MIXIN_KEY_ENC_TAB.map(i => (imgKey + subKey)[i] || '').join('').slice(0, 32);
+          async function wbiFetch(base, params) {
+            const wts = Math.floor(Date.now() / 1000);
+            const all = { ...params, wts: String(wts) };
+            const sorted = {};
+            for (const k of Object.keys(all).sort()) {
+              sorted[k] = String(all[k]).replace(/[!'()*]/g, '');
+            }
+            const query = new URLSearchParams(sorted).toString().replace(/\+/g, '%20');
+            sorted.w_rid = md5(query + mixinKey);
+            const qs = new URLSearchParams(sorted).toString().replace(/\+/g, '%20');
+            const resp = await fetch(base + '?' + qs, { credentials: 'include' });
+            return resp.json();
+          }
+
+          let uid = String(data.uid || '').trim();
+          if (!/^\d+$/.test(uid)) {
+            const searchResp = await fetch('https://api.bilibili.com/x/web-interface/search/type?search_type=bili_user&keyword=' + encodeURIComponent(uidInput), { credentials: 'include' });
+            const searchData = await searchResp.json();
+            const results = searchData?.data?.result || [];
+            if (!results.length) throw new Error('无法解析 UID: ' + uidInput);
+            uid = String(results[0].mid);
+          }
+
+          const rows = [];
+          const latestSeen = {};
+          const want = (k) => kindFilter === 'all' || kindFilter === k;
+
+          if (want('video')) {
+            let pn = 1;
+            let rank = 1;
+            let hitMarker = false;
+            const marker = String(latestMarkers?.video?.id || '');
+            while (pn <= MAX_PAGES && rows.filter(r => r.kind === 'video').length < perKindLimit) {
+              const remain = perKindLimit - rows.filter(r => r.kind === 'video').length;
+              const ps = String(Math.min(50, remain));
+              const data = await wbiFetch('https://api.bilibili.com/x/space/wbi/arc/search', {
+                mid: uid, order, pn: String(pn), ps
+              });
+              if (data.code !== 0) throw new Error('视频列表失败 ' + data.code + ': ' + (data.message || ''));
+              const vlist = data?.data?.list?.vlist || [];
+              if (!vlist.length) break;
+              for (const item of vlist) {
+                if (rows.filter(r => r.kind === 'video').length >= perKindLimit) break;
+                const bvid = item.bvid || '';
+                const row = {
+                  kind: 'video',
+                  id: bvid || String(item.aid || ''),
+                  rank,
+                  title: item.title || '',
+                  author: item.author || '',
+                  date: item.created ? new Date(item.created * 1000).toISOString().slice(0, 10) : '',
+                  plays: item.play || 0,
+                  likes: item.like || 0,
+                  url: bvid ? 'https://www.bilibili.com/video/' + bvid : '',
+                  download_command: bvid ? 'opencli bilibili download ' + bvid : ''
+                };
+                if (rank === 1 && row.id) latestSeen.video = { id: row.id, url: row.url, date: row.date };
+                if (wantIncremental && marker && row.id === marker) {
+                  hitMarker = true;
+                  break;
+                }
+                rows.push(row);
+                rank += 1;
+              }
+              const count = Number(data?.data?.page?.count || 0);
+              if (hitMarker || vlist.length < Number(ps) || rank > count) break;
+              pn += 1;
+            }
+          }
+
+          if (want('article')) {
+            let pn = 1;
+            let rank = 1;
+            let hitMarker = false;
+            const marker = String(latestMarkers?.article?.id || '');
+            while (pn <= MAX_PAGES && rank <= perKindLimit) {
+              const ps = Math.min(30, perKindLimit - rank + 1);
+              const resp = await fetch(
+                'https://api.bilibili.com/x/space/article?mid=' + uid + '&pn=' + pn + '&ps=' + ps + '&sort=publish_time',
+                { credentials: 'include' }
+              );
+              const data = await resp.json();
+              if (data.code !== 0 && data.code !== -404) {
+                throw new Error('专栏列表失败 ' + data.code + ': ' + (data.message || ''));
+              }
+              const articles = data?.data?.articles || [];
+              if (!articles.length) break;
+              for (const item of articles) {
+                if (rank > perKindLimit) break;
+                const id = item.id || item.aid || '';
+                const row = {
+                  kind: 'article',
+                  id: String(id || ''),
+                  rank,
+                  title: item.title || '',
+                  author: item.author?.name || '',
+                  date: item.publish_time ? new Date(item.publish_time * 1000).toISOString().slice(0, 10) : '',
+                  plays: item.stats?.view || 0,
+                  likes: item.stats?.like || 0,
+                  url: id ? 'https://www.bilibili.com/read/cv' + id : '',
+                  download_command: ''
+                };
+                if (rank === 1 && row.id) latestSeen.article = { id: row.id, url: row.url, date: row.date };
+                if (wantIncremental && marker && row.id === marker) {
+                  hitMarker = true;
+                  break;
+                }
+                rows.push(row);
+                rank += 1;
+              }
+              if (hitMarker || articles.length < ps) break;
+              pn += 1;
+            }
+          }
+
+          if (want('dynamic')) {
+            let offset = '';
+            let rank = 1;
+            let pages = 0;
+            let hitMarker = false;
+            const marker = String(latestMarkers?.dynamic?.id || '');
+            while (pages < MAX_PAGES && rank <= perKindLimit) {
+              const qs = new URLSearchParams({ host_mid: uid, timezone_offset: '-480' });
+              if (offset) qs.set('offset', offset);
+              const resp = await fetch('https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?' + qs.toString(), { credentials: 'include' });
+              const data = await resp.json();
+              if (data.code !== 0) throw new Error('动态列表失败 ' + data.code + ': ' + (data.message || ''));
+              const items = data?.data?.items || [];
+              if (!items.length) break;
+              for (const item of items) {
+                if (rank > perKindLimit) break;
+                const id = item.id_str || '';
+                let title = item.modules?.module_dynamic?.desc?.text || '';
+                const archive = item.modules?.module_dynamic?.major?.archive;
+                if (!title && archive?.title) title = archive.title;
+                const article = item.modules?.module_dynamic?.major?.article;
+                if (!title && article?.title) title = article.title;
+                const row = {
+                  kind: 'dynamic',
+                  id,
+                  rank,
+                  title: String(title || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+                  author: item.modules?.module_author?.name || '',
+                  date: item.modules?.module_author?.pub_ts ? new Date(item.modules.module_author.pub_ts * 1000).toISOString().slice(0, 10) : '',
+                  plays: archive?.stat?.play || 0,
+                  likes: item.modules?.module_stat?.like?.count || 0,
+                  url: id ? 'https://t.bilibili.com/' + id : '',
+                  download_command: archive?.bvid ? 'opencli bilibili download ' + archive.bvid : ''
+                };
+                if (rank === 1 && row.id) latestSeen.dynamic = { id: row.id, url: row.url, date: row.date };
+                if (wantIncremental && marker && row.id === marker) {
+                  hitMarker = true;
+                  break;
+                }
+                rows.push(row);
+                rank += 1;
+              }
+              if (hitMarker || !data?.data?.has_more) break;
+              offset = data?.data?.offset || '';
+              if (!offset) break;
+              pages += 1;
+            }
+          }
+
+          if (!rows.length) {
+            if (wantIncremental) {
+              return {
+                uid,
+                latest_seen: latestSeen,
+                rows: []
+              };
+            }
+            throw new Error('该用户没有可读取的公开内容，或接口需要登录');
+          }
+          return {
+            uid,
+            latest_seen: latestSeen,
+            rows
+          };
+        })()
+  - kv_set:
+      key: bilibili:user:${{ data.uid }}:latest
+      value: ${{ data.latest_seen }}
+      skip_empty: true
+  - select: rows
